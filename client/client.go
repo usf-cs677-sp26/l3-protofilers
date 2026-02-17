@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func put(msgHandler *messages.MessageHandler, fileName string) int {
@@ -33,6 +34,7 @@ func put(msgHandler *messages.MessageHandler, fileName string) int {
 		return 1
 	}
 
+	start := time.Now()
 	file, _ = os.Open(fileName)
 	util.CopyWithChecksum(msgHandler, file, info.Size())
 	file.Close()
@@ -41,8 +43,9 @@ func put(msgHandler *messages.MessageHandler, fileName string) int {
 	if ok, _ := msgHandler.ReceiveResponse(); !ok {
 		return 1
 	}
+	elapsed := time.Since(start)
 
-	fmt.Println("Storage complete!")
+	fmt.Printf("Storage complete! Time: %v\n", elapsed)
 	return 0
 }
 
@@ -66,11 +69,13 @@ func get(msgHandler *messages.MessageHandler, fileName string, dir string) int {
 		return 1
 	}
 
+	start := time.Now()
 	clientCheck, _ := util.CopyWithChecksum(file, msgHandler, int64(size))
+	elapsed := time.Since(start)
 	file.Close()
 
 	if util.VerifyChecksum(serverCheck, clientCheck) {
-		log.Println("Successfully retrieved file.")
+		log.Printf("Successfully retrieved file. Time: %v\n", elapsed)
 	} else {
 		log.Println("FAILED to retrieve file. Invalid checksum.")
 	}
