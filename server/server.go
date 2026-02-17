@@ -1,14 +1,13 @@
 package main
 
 import (
-	"crypto/md5"
 	"file-transfer/messages"
 	"file-transfer/util"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
+	"time"
 )
 
 func handleStorage(msgHandler *messages.MessageHandler, request *messages.StorageRequest) {
@@ -20,21 +19,28 @@ func handleStorage(msgHandler *messages.MessageHandler, request *messages.Storag
 		return
 	}
 
-	msgHandler.SendResponse(true, "Ready for data")
-	md5 := md5.New()
-	w := io.MultiWriter(file, md5)
-	io.CopyN(w, msgHandler, int64(request.Size)) /* Write and checksum as we go */
+	if !util.HasDiskSpace(".", request.Size) {
+		file.Close()
+		os.Remove(request.FileName)
+		msgHandler.SendResponse(false, fmt.Sprintf("Insufficient disk space: need %d bytes", request.Size))
+		return
+	}
+
+	msgHandler.SendResponse(true, "OK-Server is ready for data")
+	start := time.Now()
+	serverCheck, _ := util.CopyWithChecksum(file, msgHandler, int64(request.Size))
+	elapsed := time.Since(start)
 	file.Close()
 
-	serverCheck := md5.Sum(nil)
-
-	clientCheckMsg, _ := msgHandler.Receive()
-	clientCheck := clientCheckMsg.GetChecksum().Checksum
+	clientCheck := msgHandler.ReceiveChecksum()
 
 	if util.VerifyChecksum(serverCheck, clientCheck) {
 		log.Println("Successfully stored file.")
+		msgHandler.SendResponse(true, fmt.Sprintf("Storage complete: checksum verified, time: %v", elapsed))
 	} else {
 		log.Println("FAILED to store file. Invalid checksum.")
+		os.Remove(request.FileName)
+		msgHandler.SendResponse(false, fmt.Sprintf("Storage failed: checksum mismatch, time: %v", elapsed))
 	}
 }
 
@@ -44,19 +50,23 @@ func handleRetrieval(msgHandler *messages.MessageHandler, request *messages.Retr
 	// Get file size and make sure it exists
 	info, err := os.Stat(request.FileName)
 	if err != nil {
-		log.Fatalln(err)
+		log.Println("File not found:", err)
+		msgHandler.SendRetrievalResponse(false, err.Error(), 0)
+		return
 	}
 
-	msgHandler.SendRetrievalResponse(true, "Ready to send", uint64(info.Size()))
+	msgHandler.SendRetrievalResponse(true, fmt.Sprintf("Server is ready to send file: %s, Size: %d bytes", request.FileName, info.Size()), uint64(info.Size()))
 
 	file, _ := os.Open(request.FileName)
-	md5 := md5.New()
-	w := io.MultiWriter(msgHandler, md5)
-	io.CopyN(w, file, info.Size()) // Checksum and transfer file at same time
+	start := time.Now()
+	checksum, _ := util.CopyWithChecksum(msgHandler, file, info.Size())
+	elapsed := time.Since(start)
 	file.Close()
+	msgHandler.Flush()
 
-	checksum := md5.Sum(nil)
 	msgHandler.SendChecksumVerification(checksum)
+	msgHandler.SendRetrievalResponse(true, fmt.Sprintf("Retrieval complete: %s, time: %v", request.FileName, elapsed), uint64(info.Size()))
+
 }
 
 func handleClient(msgHandler *messages.MessageHandler) {
@@ -77,6 +87,7 @@ func handleClient(msgHandler *messages.MessageHandler) {
 			continue
 		case nil:
 			log.Println("Received an empty message, terminating client")
+			msgHandler.SendResponse(true, "Server is terminating connection")
 			return
 		default:
 			log.Printf("Unexpected message type: %T", msg)

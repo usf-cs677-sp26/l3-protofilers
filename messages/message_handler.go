@@ -1,6 +1,7 @@
 package messages
 
 import (
+	"bufio"
 	"encoding/binary"
 	"log"
 	"net"
@@ -8,13 +9,19 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+const bufSize = 1048576 // 1 MB
+
 type MessageHandler struct {
-	conn net.Conn
+	conn   net.Conn
+	reader *bufio.Reader
+	writer *bufio.Writer
 }
 
 func NewMessageHandler(conn net.Conn) *MessageHandler {
 	m := &MessageHandler{
-		conn: conn,
+		conn:   conn,
+		reader: bufio.NewReaderSize(conn, bufSize),
+		writer: bufio.NewWriterSize(conn, bufSize),
 	}
 
 	return m
@@ -23,7 +30,7 @@ func NewMessageHandler(conn net.Conn) *MessageHandler {
 func (m *MessageHandler) ReadN(buf []byte) error {
 	bytesRead := uint64(0)
 	for bytesRead < uint64(len(buf)) {
-		n, err := m.conn.Read(buf[bytesRead:])
+		n, err := m.reader.Read(buf[bytesRead:])
 		if err != nil {
 			return err
 		}
@@ -33,23 +40,27 @@ func (m *MessageHandler) ReadN(buf []byte) error {
 }
 
 func (m *MessageHandler) Read(p []byte) (n int, err error) {
-	return m.conn.Read(p)
+	return m.reader.Read(p)
 }
 
 func (m *MessageHandler) Write(p []byte) (n int, err error) {
-	return m.conn.Write(p)
+	return m.writer.Write(p)
 }
 
 func (m *MessageHandler) WriteN(buf []byte) error {
 	bytesWritten := uint64(0)
 	for bytesWritten < uint64(len(buf)) {
-		n, err := m.conn.Write(buf[bytesWritten:])
+		n, err := m.writer.Write(buf[bytesWritten:])
 		if err != nil {
 			return err
 		}
 		bytesWritten += uint64(n)
 	}
 	return nil
+}
+
+func (m *MessageHandler) Flush() error {
+	return m.writer.Flush()
 }
 
 func (m *MessageHandler) Send(wrapper *Wrapper) error {
@@ -63,7 +74,7 @@ func (m *MessageHandler) Send(wrapper *Wrapper) error {
 	m.WriteN(prefix)
 	m.WriteN(serialized)
 
-	return nil
+	return m.Flush()
 }
 
 func (m *MessageHandler) Receive() (*Wrapper, error) {
@@ -80,6 +91,7 @@ func (m *MessageHandler) Receive() (*Wrapper, error) {
 }
 
 func (m *MessageHandler) Close() {
+	m.writer.Flush()
 	m.conn.Close()
 }
 
@@ -134,6 +146,11 @@ func (m *MessageHandler) ReceiveResponse() (bool, string) {
 
 	log.Println(resp.GetResponse().Message)
 	return resp.GetResponse().Ok, resp.GetResponse().Message
+}
+
+func (m *MessageHandler) ReceiveChecksum() []byte {
+	msg, _ := m.Receive()
+	return msg.GetChecksum().Checksum
 }
 
 func (m *MessageHandler) ReceiveRetrievalResponse() (bool, string, uint64) {

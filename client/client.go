@@ -1,14 +1,13 @@
 package main
 
 import (
-	"crypto/md5"
 	"file-transfer/messages"
 	"file-transfer/util"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -28,12 +27,11 @@ func put(msgHandler *messages.MessageHandler, fileName string) int {
 	}
 
 	file, _ := os.Open(fileName)
-	md5 := md5.New()
-	w := io.MultiWriter(msgHandler, md5)
-	io.CopyN(w, file, info.Size()) // Checksum and transfer file at same time
+	checksum, _ := util.CopyWithChecksum(msgHandler, file, info.Size())
 	file.Close()
+	msgHandler.Flush() // flush buffered data to peer before sending checksum
 
-	checksum := md5.Sum(nil)
+	fmt.Printf("File: %s, Size: %d bytes, Checksum: %x\n", fileName, info.Size(), checksum)
 	msgHandler.SendChecksumVerification(checksum)
 	if ok, _ := msgHandler.ReceiveResponse(); !ok {
 		return 1
@@ -43,29 +41,31 @@ func put(msgHandler *messages.MessageHandler, fileName string) int {
 	return 0
 }
 
-func get(msgHandler *messages.MessageHandler, fileName string) int {
-	fmt.Println("GET", fileName)
-
-	file, err := os.OpenFile(fileName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
-	if err != nil {
-		log.Println(err)
-		return 1
-	}
-
+func get(msgHandler *messages.MessageHandler, fileName string, dir string) int {
 	msgHandler.SendRetrievalRequest(fileName)
 	ok, _, size := msgHandler.ReceiveRetrievalResponse()
 	if !ok {
 		return 1
 	}
+	fmt.Printf("GET %s (%d bytes)\n", fileName, size)
 
-	md5 := md5.New()
-	w := io.MultiWriter(file, md5)
-	io.CopyN(w, msgHandler, int64(size))
+	if !util.HasDiskSpace(dir, size) {
+		log.Printf("Insufficient disk space: need %d bytes\n", size)
+		return 1
+	}
+
+	outPath := filepath.Join(dir, fileName)
+	file, err := os.OpenFile(outPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
+	if err != nil {
+		log.Println(err)
+		return 1
+	}
+
+	clientCheck, _ := util.CopyWithChecksum(file, msgHandler, int64(size))
 	file.Close()
 
-	clientCheck := md5.Sum(nil)
-	checkMsg, _ := msgHandler.Receive()
-	serverCheck := checkMsg.GetChecksum().Checksum
+	msgHandler.ReceiveRetrievalResponse() // file info from server
+	serverCheck := msgHandler.ReceiveChecksum()
 
 	if util.VerifyChecksum(serverCheck, clientCheck) {
 		log.Println("Successfully retrieved file.")
@@ -111,6 +111,6 @@ func main() {
 	if action == "put" {
 		os.Exit(put(msgHandler, fileName))
 	} else if action == "get" {
-		os.Exit(get(msgHandler, fileName))
+		os.Exit(get(msgHandler, fileName, dir))
 	}
 }
