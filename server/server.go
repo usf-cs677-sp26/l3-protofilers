@@ -4,6 +4,7 @@ import (
 	"file-transfer/messages"
 	"file-transfer/util"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -32,9 +33,7 @@ func handleStorage(msgHandler *messages.MessageHandler, request *messages.Storag
 	elapsed := time.Since(start)
 	file.Close()
 
-	clientCheck := msgHandler.ReceiveChecksum()
-
-	if util.VerifyChecksum(serverCheck, clientCheck) {
+	if util.VerifyChecksum(serverCheck, request.Checksum) {
 		log.Println("Successfully stored file.")
 		msgHandler.SendResponse(true, fmt.Sprintf("Storage complete: checksum verified, time: %v", elapsed))
 	} else {
@@ -51,22 +50,24 @@ func handleRetrieval(msgHandler *messages.MessageHandler, request *messages.Retr
 	info, err := os.Stat(request.FileName)
 	if err != nil {
 		log.Println("File not found:", err)
-		msgHandler.SendRetrievalResponse(false, err.Error(), 0)
+		msgHandler.SendRetrievalResponse(false, err.Error(), 0, nil)
 		return
 	}
 
-	msgHandler.SendRetrievalResponse(true, fmt.Sprintf("Server is ready to send file: %s, Size: %d bytes", request.FileName, info.Size()), uint64(info.Size()))
-
+	// Pre-compute checksum before sending the response
 	file, _ := os.Open(request.FileName)
+	checksum, _ := util.CopyWithChecksum(io.Discard, file, info.Size())
+	file.Close()
+
+	msgHandler.SendRetrievalResponse(true, fmt.Sprintf("Server is ready to send file: %s, Size: %d bytes", request.FileName, info.Size()), uint64(info.Size()), checksum)
+
+	file, _ = os.Open(request.FileName)
 	start := time.Now()
-	checksum, _ := util.CopyWithChecksum(msgHandler, file, info.Size())
+	util.CopyWithChecksum(msgHandler, file, info.Size())
 	elapsed := time.Since(start)
 	file.Close()
-	msgHandler.Flush()
-
-	msgHandler.SendChecksumVerification(checksum)
-	msgHandler.SendRetrievalResponse(true, fmt.Sprintf("Retrieval complete: %s, time: %v", request.FileName, elapsed), uint64(info.Size()))
-
+	msgHandler.Flush() // flush buffered file data to client
+	log.Printf("Retrieval complete: %s, time: %v", request.FileName, elapsed)
 }
 
 func handleClient(msgHandler *messages.MessageHandler) {
@@ -76,6 +77,7 @@ func handleClient(msgHandler *messages.MessageHandler) {
 		wrapper, err := msgHandler.Receive()
 		if err != nil {
 			log.Println(err)
+			return
 		}
 
 		switch msg := wrapper.Msg.(type) {

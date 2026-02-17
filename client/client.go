@@ -4,6 +4,7 @@ import (
 	"file-transfer/messages"
 	"file-transfer/util"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -20,19 +21,23 @@ func put(msgHandler *messages.MessageHandler, fileName string) int {
 		log.Fatalln(err)
 	}
 
-	// Tell the server we want to store this file
-	msgHandler.SendStorageRequest(fileName, uint64(info.Size()))
+	// Pre-compute checksum before sending the request
+	file, _ := os.Open(fileName)
+	checksum, _ := util.CopyWithChecksum(io.Discard, file, info.Size())
+	file.Close()
+	fmt.Printf("File: %s, Size: %d bytes, Checksum: %x\n", fileName, info.Size(), checksum)
+
+	// Tell the server we want to store this file (include checksum upfront)
+	msgHandler.SendStorageRequest(filepath.Base(fileName), uint64(info.Size()), checksum)
 	if ok, _ := msgHandler.ReceiveResponse(); !ok {
 		return 1
 	}
 
-	file, _ := os.Open(fileName)
-	checksum, _ := util.CopyWithChecksum(msgHandler, file, info.Size())
+	file, _ = os.Open(fileName)
+	util.CopyWithChecksum(msgHandler, file, info.Size())
 	file.Close()
-	msgHandler.Flush() // flush buffered data to peer before sending checksum
+	msgHandler.Flush() // flush buffered file data before waiting for server response
 
-	fmt.Printf("File: %s, Size: %d bytes, Checksum: %x\n", fileName, info.Size(), checksum)
-	msgHandler.SendChecksumVerification(checksum)
 	if ok, _ := msgHandler.ReceiveResponse(); !ok {
 		return 1
 	}
@@ -43,7 +48,7 @@ func put(msgHandler *messages.MessageHandler, fileName string) int {
 
 func get(msgHandler *messages.MessageHandler, fileName string, dir string) int {
 	msgHandler.SendRetrievalRequest(fileName)
-	ok, _, size := msgHandler.ReceiveRetrievalResponse()
+	ok, _, size, serverCheck := msgHandler.ReceiveRetrievalResponse()
 	if !ok {
 		return 1
 	}
@@ -63,9 +68,6 @@ func get(msgHandler *messages.MessageHandler, fileName string, dir string) int {
 
 	clientCheck, _ := util.CopyWithChecksum(file, msgHandler, int64(size))
 	file.Close()
-
-	msgHandler.ReceiveRetrievalResponse() // file info from server
-	serverCheck := msgHandler.ReceiveChecksum()
 
 	if util.VerifyChecksum(serverCheck, clientCheck) {
 		log.Println("Successfully retrieved file.")
