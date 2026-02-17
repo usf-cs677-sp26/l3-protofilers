@@ -5,14 +5,17 @@ A file transfer client and server using TCP and Google Protocol Buffers.
 ## Usage
 
 ### Server
+
 ```bash
 ./server listen-port [download-dir]
 # Example:
 ./server 9898 ./stuff/
 ```
+
 If `download-dir` is not provided, files are stored in the current working directory.
 
 ### Client
+
 ```bash
 ./client host:port put|get file-name [destination-dir]
 # Store a file:
@@ -20,6 +23,7 @@ If `download-dir` is not provided, files are stored in the current working direc
 # Retrieve a file:
 ./client localhost:9898 get file.jpg /tmp/my/stuff/
 ```
+
 If `destination-dir` is not provided for GET, files are saved to the current working directory.
 
 ## Changes Made
@@ -36,4 +40,4 @@ If `destination-dir` is not provided for GET, files are saved to the current wor
 
 ## Compatibility Notes
 
-
+No changes were needed for compatibility. Both of our implementations included the same `.proto` changes (adding checksum to `StorageRequest` and `RetrievalResponse`), so the client and server worked with each other without any modifications.
