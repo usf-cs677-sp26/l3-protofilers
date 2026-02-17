@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"syscall"
+	"time"
 )
 
 func handleStorage(msgHandler *messages.MessageHandler, request *messages.StorageRequest) {
@@ -95,10 +96,14 @@ func handleClient(msgHandler *messages.MessageHandler) {
 
 		switch msg := wrapper.Msg.(type) {
 		case *messages.Wrapper_StorageReq:
+			start := time.Now()
 			handleStorage(msgHandler, msg.StorageReq)
+			log.Printf("Storage request took %v\n", time.Since(start))
 			continue
 		case *messages.Wrapper_RetrievalReq:
+			start := time.Now()
 			handleRetrieval(msgHandler, msg.RetrievalReq)
+			log.Printf("Retrieval request took %v\n", time.Since(start))
 			continue
 		case nil:
 			log.Println("Received an empty message, terminating client")
