@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -21,20 +22,27 @@ func put(msgHandler *messages.MessageHandler, fileName string) int {
 		log.Fatalln(err)
 	}
 
-	// Tell the server we want to store this file
-	msgHandler.SendStorageRequest(fileName, uint64(info.Size()))
+	// Compute checksum first
+	file, err := os.Open(fileName)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	hash := md5.New()
+	io.Copy(hash, file)
+	file.Close()
+	checksum := hash.Sum(nil)
+
+	// Tell the server we want to store this file (send only the base name)
+	baseName := filepath.Base(fileName)
+	msgHandler.SendStorageRequest(baseName, uint64(info.Size()), checksum)
 	if ok, _ := msgHandler.ReceiveResponse(); !ok {
 		return 1
 	}
 
-	file, _ := os.Open(fileName)
-	md5 := md5.New()
-	w := io.MultiWriter(msgHandler, md5)
-	io.CopyN(w, file, info.Size()) // Checksum and transfer file at same time
+	// Stream file data to server
+	file, _ = os.Open(fileName)
+	io.CopyN(msgHandler, file, info.Size())
 	file.Close()
-
-	checksum := md5.Sum(nil)
-	msgHandler.SendChecksumVerification(checksum)
 	if ok, _ := msgHandler.ReceiveResponse(); !ok {
 		return 1
 	}
@@ -43,30 +51,28 @@ func put(msgHandler *messages.MessageHandler, fileName string) int {
 	return 0
 }
 
-func get(msgHandler *messages.MessageHandler, fileName string) int {
+func get(msgHandler *messages.MessageHandler, fileName string, dir string) int {
 	fmt.Println("GET", fileName)
 
-	file, err := os.OpenFile(fileName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
+	msgHandler.SendRetrievalRequest(fileName)
+	ok, _, size, serverCheck := msgHandler.ReceiveRetrievalResponse()
+	if !ok {
+		return 1
+	}
+
+	localPath := filepath.Join(dir, fileName)
+	file, err := os.OpenFile(localPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
 	if err != nil {
 		log.Println(err)
 		return 1
 	}
 
-	msgHandler.SendRetrievalRequest(fileName)
-	ok, _, size := msgHandler.ReceiveRetrievalResponse()
-	if !ok {
-		return 1
-	}
-
-	md5 := md5.New()
-	w := io.MultiWriter(file, md5)
+	hash := md5.New()
+	w := io.MultiWriter(file, hash)
 	io.CopyN(w, msgHandler, int64(size))
 	file.Close()
 
-	clientCheck := md5.Sum(nil)
-	checkMsg, _ := msgHandler.Receive()
-	serverCheck := checkMsg.GetChecksum().Checksum
-
+	clientCheck := hash.Sum(nil)
 	if util.VerifyChecksum(serverCheck, clientCheck) {
 		log.Println("Successfully retrieved file.")
 	} else {
@@ -111,6 +117,6 @@ func main() {
 	if action == "put" {
 		os.Exit(put(msgHandler, fileName))
 	} else if action == "get" {
-		os.Exit(get(msgHandler, fileName))
+		os.Exit(get(msgHandler, fileName, dir))
 	}
 }
